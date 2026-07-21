@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from datetime import datetime
 from database import (init_database, save_report, get_all_reports, get_report_by_id, delete_report,
-                      save_player, get_squad, delete_player, search_reports)
+                    save_player, get_squad, delete_player, search_reports, register_coach, login_coach)
 
 # initialise database on startup
 init_database()
@@ -17,37 +17,81 @@ init_database()
 load_dotenv()
 
 #--- Password Protection ----
-def check_password():
-    def password_entered():
-        if st.session_state["password"] == st.secrets.get("APP_PASSWORD", "coach123"):
-            st.session_state["authenticated"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["authenticated"] = False
+def show_auth_page():
+    """Show login and register tabs"""
+    st.title("⚽ Football Tactical Analyst")
+    st.markdown("---")
 
-    if "authenticated" not in st.session_state:
-        st.session_state["authenticated"] = False
+    tab1, tab2 = st.tabs(["🔐 Login", "📝 Register"])
 
-    if not st.session_state["authenticated"]:
-        st.title("⚽ Football Tactical Analyst")
-        st.markdown("---")
-        st.subheader("🔐 Coach Login")
-        st.text_input("Password", type="password",
-                      key="password",
-                      on_change=password_entered)
-        if st.session_state.get("authenticated") == False and "password" not in st.session_state:
-            st.error("Incorrect password. Please try again.")
-        return False
-    return True
+    with tab1:
+        st.subheader("Coach Login")
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password",
+                                  key="login_password")
 
-if not check_password():
+        if st.button("Login", type="primary", key="login_btn"):
+            if not username or not password:
+                st.error("Please enter username and password.")
+            else:
+                coach = login_coach(username, password)
+                if coach:
+                    st.session_state["coach"] = coach
+                    st.session_state["authenticated"] = True
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+
+    with tab2:
+        st.subheader("Create Account")
+        new_username = st.text_input("Choose Username",
+                                      key="reg_username")
+        new_password = st.text_input("Choose Password",
+                                      type="password",
+                                      key="reg_password")
+        confirm = st.text_input("Confirm Password",
+                                 type="password",
+                                 key="reg_confirm")
+
+        if st.button("Register", type="primary", key="reg_btn"):
+            if not new_username or not new_password:
+                st.error("Please fill in all fields.")
+            elif new_password != confirm:
+                st.error("Passwords don't match.")
+            elif len(new_password) < 6:
+                st.error("Password must be at least 6 characters.")
+            else:
+                success = register_coach(new_username, new_password)
+                if success:
+                    st.success("Account created! Please login.")
+                else:
+                    st.error("Username already taken.")
+
+# ─── Auth gate ───
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    show_auth_page()
     st.stop()
+
+# ─── Logged in — show coach info in sidebar ───
+coach = st.session_state["coach"]
+st.sidebar.markdown(f"👤 **{coach['username']}**")
+st.sidebar.markdown(f"*{coach['role'].capitalize()}*")
+if st.sidebar.button("Logout", key="logout_btn"):
+    del st.session_state["authenticated"]
+    del st.session_state["coach"]
+    st.rerun()
+st.sidebar.markdown("---")
 
 
 
 # ─── Backend (copied from football_analyst.py) ───
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+coach_id = st.session_state["coach"]["id"]
 
 def ask_claude(messages, system):
     try:
@@ -700,6 +744,7 @@ if page == "New Report":
             if st.button("💾 Save Report", key="nr_save_btn"):
                 ctx = st.session_state["match_context"]
                 save_report(
+                    coach_id=coach_id,
                     team=ctx["team"],
                     opposition=ctx["opposition"],
                     league=ctx["league"],
@@ -740,7 +785,7 @@ elif page == "Squad Manager":
     ability_ratings = ["Poor", "Average", "Good", "Excellent"]
     positions = list(POSITION_ABILITIES.keys())
 
-    squad = get_squad()   
+    squad = get_squad(coach_id)   
 
     tab1, tab2 = st.tabs(["➕ Manage Squad", "⚽ Generate Formations"])
 
@@ -777,7 +822,7 @@ elif page == "Squad Manager":
             elif any(p["name"].lower() == p_name.lower() for p in squad):
                 st.warning(f"{p_name} is already in the squad.")
             else:
-                success = save_player(p_name, p_position, p_form, abilities)
+                success = save_player(coach_id, p_name, p_position, p_form, abilities)
                 if success:
                     st.success(f"✅ {p_name} added to database!")
                     st.rerun()
@@ -815,7 +860,7 @@ elif page == "Squad Manager":
                             ))
                         with c4:
                             if st.button("🗑️", key=f"sm_del_{p['name']}"):
-                                delete_player(p["name"])
+                                delete_player(coach_id, p["name"])
                                 st.rerun()
 
     with tab2:
@@ -897,9 +942,9 @@ elif page == "View Reports":
                                 key="report_search")
     
     if search_query:
-        reports = search_reports(search_query)
+        reports = search_reports(coach_id, search_query)
     else:
-        reports = get_all_reports()
+        reports = get_all_reports(coach_id)
 
 
     if not reports:
