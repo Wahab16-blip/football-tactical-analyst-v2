@@ -10,6 +10,8 @@ from sentence_transformers import SentenceTransformer
 from datetime import datetime
 from database import (init_database, save_report, get_all_reports, get_report_by_id, delete_report,
                     save_player, get_squad, delete_player, search_reports, register_coach, login_coach)
+from football_api import (search_players, get_player_details, get_player_abilities, map_api_position)
+
 
 # initialise database on startup
 init_database()
@@ -787,10 +789,55 @@ elif page == "Squad Manager":
 
     squad = get_squad(coach_id)   
 
-    tab1, tab2 = st.tabs(["➕ Manage Squad", "⚽ Generate Formations"])
+    tab1, tab2, tab3 = st.tabs(["🔍 Search Real Players", "➕ Manage Squad", "⚽ Generate Formations"])
 
-    #----- TAB1: Add Players -----
+    #----- TAB1: Search Real Players -----
     with tab1:
+        st.subheader("🔍 Search Real Players")
+
+        # clear search if importing
+        if "importing_player" in st.session_state:
+            if "search_results" in st.session_state:
+                del st.session_state["search_results"]
+
+        search_col1, search_col2 = st.columns([3, 1])
+        with search_col1:
+            player_search = st.text_input(
+                "Search by player name",
+                placeholder="e.g. Bellingham, Salah, Mbappe...",
+                key="sm_player_search"
+            )
+        with search_col2:
+            search_btn = st.button("Search", key="sm_search_btn")
+
+        if search_btn and player_search:
+            with st.spinner(f"Searching for {player_search}..."):
+                results = search_players(player_search)
+            st.session_state["search_results"] = results
+
+        if "search_results" in st.session_state:
+            results = st.session_state["search_results"]
+            if not results:
+                st.warning("No players found. Try a different name.")
+            else:
+                st.markdown(f"**{len(results)} players found:**")
+                for i, player in enumerate(results[:5]):
+                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                    with col1:
+                        st.markdown(f"**{player['name']}**")
+                        st.caption(player['country'])
+                    with col2:
+                        st.caption(player['team'])
+                    with col3:
+                        st.caption(f"Position: {player['position']}")
+                    with col4:
+                        if st.button("Import", key=f"sm_import_{i}"):
+                            st.session_state["importing_player"] = player
+                            del st.session_state["search_results"]
+                            st.rerun()
+
+    #----- TAB2: Add Players -----
+    with tab2:
         st.subheader("Add New Player")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -863,7 +910,7 @@ elif page == "Squad Manager":
                                 delete_player(coach_id, p["name"])
                                 st.rerun()
 
-    with tab2:
+    with tab3:
         st.subheader("Generate Formations")
 
         if len(squad) < 11:
@@ -933,6 +980,54 @@ elif page == "Squad Manager":
                     st.markdown(
                         st.session_state["sm_raw_formations"]
                     )
+
+    # ─── OUTSIDE tabs — import confirmation ───
+    if "importing_player" in st.session_state:
+        p = st.session_state["importing_player"]
+        st.markdown("---")
+        st.subheader(f"📥 Importing {p['name']}")
+        st.caption(f"{p['team']} | {p['country']}")
+
+        mapped_pos = map_api_position(p["position"])
+
+        col1, col2 = st.columns(2)
+        with col1:
+            import_pos = st.selectbox(
+                "Confirm Position", positions,
+                index=positions.index(mapped_pos) if mapped_pos in positions else 0,
+                key="sm_import_pos"
+            )
+        with col2:
+            import_form = st.selectbox(
+                "Current Form", form_ratings,
+                index=2, key="sm_import_form"
+            )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Confirm Import", key="sm_confirm_import", type="primary"):
+                with st.spinner("Fetching player abilities..."):
+                    abilities = get_player_abilities(p["id"], import_pos)
+
+                if abilities:
+                    success = save_player(
+                        coach_id, p["name"],
+                        import_pos, import_form, abilities
+                    )
+                    if success:
+                        st.success(f"✅ {p['name']} imported with real stats!")
+                        del st.session_state["importing_player"]
+                        st.rerun()
+                    else:
+                        st.warning(f"{p['name']} already in squad.")
+                        del st.session_state["importing_player"]
+                else:
+                    st.warning("Couldn't fetch abilities — add manually.")
+                    del st.session_state["importing_player"]
+        with col2:
+            if st.button("❌ Cancel", key="sm_cancel_import"):
+                del st.session_state["importing_player"]
+                st.rerun()
 
 elif page == "View Reports":
     st.header("📁 Saved Reports")
