@@ -145,7 +145,114 @@ def map_api_position(api_position):
     return mapping.get(api_position, "CMF")
 
 
+def search_teams(name):
+    """Search for a team by name"""
+    try:
+        url = f"{BASE_URL}/api/v1/search/teams/{name}/more"
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return []
+        data = response.json()
+        teams = []
+        for t in data.get("teams", []):
+            # only include men's senior clubs
+            if t.get("gender") == "M" and not t.get("national", False):
+                teams.append({
+                    "id": t["id"],
+                    "name": t["name"],
+                    "country": t.get("country", {}).get("name", "Unknown"),
+                    "code": t.get("nameCode", "")
+                })
+        return teams[:5]
+    except Exception as e:
+        print(f"Team search error: {e}")
+        return []
 
+def get_opposition_analysis(team_id, team_name):
+    """Get opposition recent form and stats"""
+    try:
+        url = f"{BASE_URL}/api/v1/team/{team_id}/events/last/0"
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+
+        all_events = data.get("events", [])
+        last_5 = all_events[-5:]
+
+        form = []
+        goals_scored = 0
+        goals_conceded = 0
+        matches = []
+
+        for match in last_5:
+            home = match["homeTeam"]["name"]
+            away = match["awayTeam"]["name"]
+            home_score = match.get("homeScore", {}).get("current", 0) or 0
+            away_score = match.get("awayScore", {}).get("current", 0) or 0
+            winner = match.get("winnerCode", 0)
+            tournament = match.get("tournament", {}).get("name", "Unknown")
+
+            is_home = team_name.lower() in home.lower()
+
+            if winner == 3:
+                result = "D"
+            elif (winner == 1 and is_home) or (winner == 2 and not is_home):
+                result = "W"
+            else:
+                result = "L"
+
+            if is_home:
+                goals_scored += home_score
+                goals_conceded += away_score
+            else:
+                goals_scored += away_score
+                goals_conceded += home_score
+
+            form.append(result)
+            matches.append(
+                f"{home} {home_score}-{away_score} {away} ({tournament})"
+            )
+
+        # analyse form
+        wins = form.count("W")
+        draws = form.count("D")
+        losses = form.count("L")
+
+        if wins >= 3:
+            form_rating = "Excellent"
+        elif wins >= 2:
+            form_rating = "Good"
+        elif wins >= 1:
+            form_rating = "Average"
+        else:
+            form_rating = "Poor"
+
+        # defensive/attacking assessment
+        avg_scored = goals_scored / max(len(last_5), 1)
+        avg_conceded = goals_conceded / max(len(last_5), 1)
+
+        attacking = "Strong" if avg_scored >= 2 else "Moderate" if avg_scored >= 1 else "Weak"
+        defensive = "Solid" if avg_conceded <= 1 else "Vulnerable" if avg_conceded >= 2 else "Moderate"
+
+        return {
+            "team": team_name,
+            "form": form,
+            "form_string": " ".join(form),
+            "form_rating": form_rating,
+            "wins": wins,
+            "draws": draws,
+            "losses": losses,
+            "goals_scored": goals_scored,
+            "goals_conceded": goals_conceded,
+            "attacking_strength": attacking,
+            "defensive_strength": defensive,
+            "recent_matches": matches
+        }
+
+    except Exception as e:
+        print(f"Opposition analysis error: {e}")
+        return None
 
 
 

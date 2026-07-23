@@ -10,7 +10,8 @@ from sentence_transformers import SentenceTransformer
 from datetime import datetime
 from database import (init_database, save_report, get_all_reports, get_report_by_id, delete_report,
                     save_player, get_squad, delete_player, search_reports, register_coach, login_coach)
-from football_api import (search_players, get_player_details, get_player_abilities, map_api_position)
+from football_api import (search_players, get_player_details, get_player_abilities, map_api_position,
+                          search_teams, get_opposition_analysis)
 
 
 # initialise database on startup
@@ -266,6 +267,20 @@ Format it clearly with section headers."""
     if p['name']  # only include players with names
     ])
 
+    # build opposition analysis section
+    opp_analysis = match_context.get("opp_analysis")
+    opp_section = ""
+    if opp_analysis:
+        opp_section = f"""
+Real Opposition Data:
+Form (last 5): {opp_analysis['form_string']}
+Goals scored: {opp_analysis['goals_scored']} | Conceded: {opp_analysis['goals_conceded']}
+Attacking strength: {opp_analysis['attacking_strength']}
+Defensive strength: {opp_analysis['defensive_strength']}
+Recent matches:
+{chr(10).join(opp_analysis['recent_matches'])}
+"""
+
     # build the prompt from match context
     context_prompt = f"""
 Analyse this match and generate a tactical report:
@@ -277,6 +292,8 @@ Venue: {match_context['venue']}
 
 Starting 11:
 {players_text}
+
+{opp_section}
 
 Known Opposition Formation: {match_context['opp_formation']} 
 Additional Notes: {match_context.get('opp_notes', 'None')}
@@ -656,73 +673,146 @@ if page == "New Report":
 
     # ---- Section 3: Opposition ---
     st.subheader("🎯 Opposition Analysis")
+
+    # ─── Live opposition search ───
+    st.markdown("**Search Opposition Team (optional)**")
+    opp_col1, opp_col2 = st.columns([3, 1])
+    with opp_col1:
+        opp_search = st.text_input(
+            "Search team name",
+            placeholder="e.g. Chelsea, Real Madrid...",
+            key="nr_opp_search"
+        )
+    with opp_col2:
+        opp_search_btn = st.button("Search", key="nr_opp_search_btn")
+
+    if opp_search_btn and opp_search:
+        with st.spinner(f"Searching for {opp_search}..."):
+            team_results = search_teams(opp_search)
+        st.session_state["opp_team_results"] = team_results
+
+    if "opp_team_results" in st.session_state:
+        teams = st.session_state["opp_team_results"]
+        if not teams:
+            st.warning("No teams found.")
+        else:
+            for i, team in enumerate(teams):
+                col1, col2, col3 = st.columns([3, 2, 1])
+                with col1:
+                    st.markdown(f"**{team['name']}**")
+                with col2:
+                    st.caption(team['country'])
+                with col3:
+                    if st.button("Analyse", key=f"nr_analyse_{i}"):
+                        with st.spinner(f"Fetching {team['name']} data..."):
+                            analysis = get_opposition_analysis(
+                                team["id"], team["name"]
+                            )
+                        if analysis:
+                            st.session_state["opp_analysis"] = analysis
+                            del st.session_state["opp_team_results"]
+                            st.rerun()
+
+    # ─── Show opposition analysis if fetched ───
+    if "opp_analysis" in st.session_state:
+        opp = st.session_state["opp_analysis"]
+        st.success(f"✅ Opposition data loaded: {opp['team']}")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Form", opp["form_string"])
+            st.caption(f"W{opp['wins']} D{opp['draws']} L{opp['losses']}")
+        with col2:
+            st.metric("Attacking", opp["attacking_strength"])
+            st.caption(f"{opp['goals_scored']} goals in 5 matches")
+        with col3:
+            st.metric("Defensive", opp["defensive_strength"])
+            st.caption(f"{opp['goals_conceded']} conceded in 5 matches")
+
+        st.markdown("**Recent Matches:**")
+        for match in opp["recent_matches"]:
+            result = opp["form"][opp["recent_matches"].index(match)]
+            icon = "✅" if result == "W" else "⚖️" if result == "D" else "❌"
+            st.caption(f"{icon} {match}")
+
+        if st.button("❌ Clear Opposition Data", key="nr_clear_opp"):
+            del st.session_state["opp_analysis"]
+            st.rerun()
+
+    st.markdown("---")
+
+    # ─── Manual opposition fields ───
     col1, col2 = st.columns(2)
     with col1:
         opp_formations = ["Unknown","4-3-3","4-4-2","3-5-2",
-                          "4-2-3-1","5-3-2","4-1-4-1","3-4-3"]
-        opp_formation = st.selectbox("Known Opposition Formation", opp_formations)
+                        "4-2-3-1","5-3-2","4-1-4-1","3-4-3"]
+        opp_formation = st.selectbox("Known Opposition Formation",
+                                    opp_formations)
     with col2:
-        opp_notes = st.text_area("Additional Notes", 
-                                  placeholder="Any known opposition strengths, key players to watch...",
-                                  height=100)
-    
-    st.markdown("---")
+        opp_notes = st.text_area(
+            "Additional Notes",
+            placeholder="Any known opposition strengths, key players...",
+            height=100
+        )
+        
+        st.markdown("---")
 
-    fatigued = [p["name"] for p in players if p["condition"] != "Fit" and p["name"]]
-    if fatigued:
-        st.warning(f"⚠️ Players not at full fitness: {', '.join(fatigued)}")
-    
-    #---- Generate Button ----
-    if st.button("⚽ Generate Tactical Report", type="primary", key="generate_formations_btn"):
-        # validate inputs
-        if not team or not opposition or not venue:
-            st.error("Please fill in Club Name, Opposition, and Venue before generating.")
-        elif not any(p["name"] for p in players):
-            st.error("Please enter at least one player name.")
-        else:
-            # build match context
-            match_context = {
-                "team": team,
-                "opposition": opposition,
-                "venue": venue,
-                "league": league,
-                "players": players,
-                "opp_formation": opp_formation,
-                "opp_notes": opp_notes
-            }
+        fatigued = [p["name"] for p in players if p["condition"] != "Fit" and p["name"]]
+        if fatigued:
+            st.warning(f"⚠️ Players not at full fitness: {', '.join(fatigued)}")
+        
+        #---- Generate Button ----
+        if st.button("⚽ Generate Tactical Report", type="primary", key="generate_formations_btn"):
+            # validate inputs
+            if not team or not opposition or not venue:
+                st.error("Please fill in Club Name, Opposition, and Venue before generating.")
+            elif not any(p["name"] for p in players):
+                st.error("Please enter at least one player name.")
+            else:
+                # build match context
+                match_context = {
+                    "team": team,
+                    "opposition": opposition,
+                    "venue": venue,
+                    "league": league,
+                    "players": players,
+                    "opp_formation": opp_formation,
+                    "opp_notes": opp_notes,
+                    "opp_analysis": st.session_state.get("opp_analysis", None)
+                }
 
-            with st.status("⚽ Generating tactical report...", expanded=True) as status:
-                st.write("☁️ Checking weather conditions...")
-                st.write("📚 Searching tactical knowledge base...")
-                st.write("🧠 Claude is analysing your squad...")
-                try:
-                    # try API first
-                    api_response = requests.post(
-                        "http://localhost:8000/analyse",
-                        json={
-                            "team": match_context["team"],
-                            "opposition": match_context["opposition"],
-                            "venue": match_context["venue"],
-                            "league": match_context["league"],
-                            "players": match_context["players"],
-                            "opp_formation": match_context["opp_formation"],
-                            "opp_notes": match_context.get("opp_notes", "")
-                        },
-                        timeout=5
-                    )
-                    if api_response.status_code == 200:
-                        report = api_response.json()["report"]
-                    else:
+                with st.status("⚽ Generating tactical report...", expanded=True) as status:
+                    st.write("☁️ Checking weather conditions...")
+                    st.write("📚 Searching tactical knowledge base...")
+                    st.write("🧠 Claude is analysing your squad...")
+                    try:
+                        # try API first
+                        api_response = requests.post(
+                            "http://localhost:8000/analyse",
+                            json={
+                                "team": match_context["team"],
+                                "opposition": match_context["opposition"],
+                                "venue": match_context["venue"],
+                                "league": match_context["league"],
+                                "players": match_context["players"],
+                                "opp_formation": match_context["opp_formation"],
+                                "opp_notes": match_context.get("opp_notes", ""),
+                            },
+                            timeout=5
+                        )
+                        if api_response.status_code == 200:
+                            report = api_response.json()["report"]
+                        else:
+                            report = generate_report(match_context)
+
+                    except:
+                        # fall back to direct Claude call
                         report = generate_report(match_context)
 
-                except:
-                    # fall back to direct Claude call
-                    report = generate_report(match_context)
-
-                st.session_state["report"] = report
-                st.session_state["match_context"] = match_context
-                st.session_state["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                status.update(label="✅ Report ready!", state="complete")
+                    st.session_state["report"] = report
+                    st.session_state["match_context"] = match_context
+                    st.session_state["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    status.update(label="✅ Report ready!", state="complete")
 
     # display report if it exits
     if "report" in st.session_state:
