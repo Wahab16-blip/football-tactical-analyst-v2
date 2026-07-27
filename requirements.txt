@@ -5,3 +5,9 @@ requests
 numpy
 sentence-transformers
 torch
+fastapi
+uvicorn
+bcrypt
+
+
+
